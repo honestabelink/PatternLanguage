@@ -144,6 +144,13 @@ namespace pl::lib::libstd::mem {
                 return std::nullopt;
             });
 
+            /* find_section(name) -> id */
+            runtime.addFunction(nsStdMem, "find_section", FunctionParameterCount::exactly(1), [](Evaluator *ctx, auto params) -> std::optional<Token::Literal> {
+                auto name = Token::literalToString(params[0], false);
+
+                return u128(ctx->findSection(name));
+            });
+
             /* get_section_size(id) -> size */
             runtime.addFunction(nsStdMem, "get_section_size", FunctionParameterCount::exactly(1), [](Evaluator *ctx, auto params) -> std::optional<Token::Literal> {
                 auto id = Token::literalToUnsigned(params[0]);
@@ -165,11 +172,14 @@ namespace pl::lib::libstd::mem {
                     err::E0012.throwError("Cannot write to main section.", "The main section represents the currently loaded data and is immutable.");
                 else if (toId == ptrn::Pattern::HeapSectionId)
                     err::E0012.throwError("Invalid section id.");
-
-                auto& section = ctx->getSection(toId);
-                if (section.size() < toAddr + size)
-                    section.resize(toAddr + size);
-                std::memcpy(section.data() + toAddr, data.data(), size);
+                else if (const auto &section = ctx->retrieveSection(fromId); section.hasDataSource())
+                    section.writeFunction(toAddr, data.data(), size);
+                else {
+                    auto& sectionData = ctx->getSection(toId);
+                    if (sectionData.size() < toAddr + size)
+                        sectionData.resize(toAddr + size);
+                    std::memcpy(sectionData.data() + toAddr, data.data(), size);
+                }
 
                 return std::nullopt;
             });
@@ -184,33 +194,47 @@ namespace pl::lib::libstd::mem {
                 else if (toId == ptrn::Pattern::HeapSectionId)
                     err::E0012.throwError("Invalid section id.");
 
-                auto& section = ctx->getSection(toId);
+                auto& data = ctx->getSection(toId);
+                const auto& section = ctx->retrieveSection(toId);
 
                 switch (Token::getLiteralType(params[0])) {
                     using enum Token::LiteralType;
                     case String: {
                         auto string = Token::literalToString(params[0], false);
 
-                        if (section.size() < toAddr + string.size())
-                            section.resize(toAddr + string.size());
+                        if (section.hasDataSource()) {
+                            section.writeFunction(toAddr, reinterpret_cast<const u8*>(string.data()), string.size());
+                        }
+                        else {
+                            if (data.size() < toAddr + string.size())
+                                data.resize(toAddr + string.size());
 
-                        std::copy(string.begin(), string.end(), section.begin() + toAddr);
+                            std::copy(string.begin(), string.end(), data.begin() + toAddr);
+                        }
                         break;
                     }
                     case Pattern: {
                         auto pattern = Token::literalToPattern(params[0]);
 
-                        if (section.size() < toAddr + pattern->getSize())
-                            section.resize(toAddr + pattern->getSize());
+                        if (data.size() < toAddr + pattern->getSize())
+                            data.resize(toAddr + pattern->getSize());
 
                         if (auto iterable = dynamic_cast<ptrn::Iteratable*>(pattern)) {
                             iterable->forEachEntry(0, iterable->getEntryCount(), [&](u64, ptrn::Pattern *entry) {
                                 auto entrySize = entry->getSize();
-                                ctx->readData(entry->getOffset(), section.data() + toAddr, entrySize, entry->getSection());
+                                ctx->readData(entry->getOffset(), data.data() + toAddr, entrySize, entry->getSection());
+
+                                if (section.hasDataSource()) {
+                                    section.writeFunction(toAddr, data.data() + toAddr, entrySize);
+                                }
                                 toAddr += entrySize;
                             });
                         } else {
-                            ctx->readData(pattern->getOffset(), section.data() + toAddr, pattern->getSize(), pattern->getSection());
+                            ctx->readData(pattern->getOffset(), data.data() + toAddr, pattern->getSize(), pattern->getSection());
+
+                            if (section.hasDataSource()) {
+                                section.writeFunction(toAddr, data.data() + toAddr, pattern->getSize());
+                            }
                         }
                         break;
                     }

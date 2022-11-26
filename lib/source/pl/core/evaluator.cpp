@@ -326,7 +326,8 @@ namespace pl::core {
 
         // Write value into variable storage
         {
-            bool heapSection = pattern->getSection() == ptrn::Pattern::HeapSectionId;
+            u64 section = pattern->getSection();
+            bool heapSection = section == ptrn::Pattern::HeapSectionId;
             auto &storage = [&, this]() -> auto& {
                 if (heapSection)
                     return this->getHeap()[pattern->getHeapAddress()];
@@ -338,7 +339,8 @@ namespace pl::core {
                 u64 offset = heapSection ? pattern->getOffset() & 0xFFFF'FFFF : pattern->getOffset();
 
                 storage.resize(offset + pattern->getSize());
-                std::memcpy(storage.data() + offset, &value, pattern->getSize());
+                auto &section = this->m_sections[pattern->getSection()];
+                section->writeData(-1, offset, reinterpret_cast<const u8*>(&value), pattern->getSize());
 
                 if (this->isDebugModeEnabled())
                     this->getConsole().log(LogConsole::Level::Debug, fmt::format("Setting local variable '{}' to {}.", pattern->getVariableName(), value));
@@ -375,9 +377,9 @@ namespace pl::core {
                             this->readData(value->getOffset(), storage.data(), value->getSize(), value->getSection());
                         } else if (storage.size() < pattern->getOffset() + pattern->getSize()) {
                             storage.resize(pattern->getOffset() + pattern->getSize());
-                            this->readData(value->getOffset(), storage.data() + pattern->getOffset(), value->getSize(), value->getSection());
+                            auto &section = this->m_sections[pattern->getSection()];
+                            section->writeData(value->getOffset(), pattern->getOffset(), reinterpret_cast<const u8*>(&value), pattern->getSize());
                         }
-
 
                         if (this->isDebugModeEnabled())
                             this->getConsole().log(LogConsole::Level::Debug, fmt::format("Setting local variable '{}' to {:02X}.", pattern->getVariableName(), fmt::join(storage, " ")));
@@ -460,10 +462,10 @@ namespace pl::core {
                 std::memset(buffer, 0x00, size);
         } else {
             if (this->m_sections.contains(sectionId)) {
-                auto &section = this->m_sections[sectionId];
+                auto &section = *this->m_sections[sectionId];
 
-                if ((address + size) <= section.data.size())
-                    std::memcpy(buffer, section.data.data() + address, size);
+                if ((address + size) <= section.size())
+                    section.readData(address, reinterpret_cast<u8 *>(buffer), size);
                 else
                     std::memset(buffer, 0x00, size);
             } else
@@ -489,16 +491,54 @@ namespace pl::core {
         return this->m_sectionIdStack.back();
     }
 
+    
+    u64 Evaluator::createSection(const std::string &name, std::function<void(u64, const u8*, size_t)> readFunction, std::function<void(u64, const u8*, size_t)> writeFunction, size_t size) {
+        auto id = this->m_sectionId;
+        this->m_sectionId++;
+
+        api::SectionDataSourceBacked f = {name, size, std::move(readFunction), std::move(writeFunction)};
+        this->m_persistentSections.insert({ id, std::unique_ptr<api::Section>(new api::SectionDataSourceBacked(f)) });
+        return id;
+    }
+
+    // u64 Evaluator::createSection(const std::string &name, const std::string &path) {
+    //     auto id = this->m_sectionId;
+    //     this->m_sectionId++;
+
+    //     api::SectionFileBacked f = {name, path};
+    //     this->m_persistentSections.insert({ id, std::make_unique<api::SectionFileBacked>(f) });
+    //     return id;
+    // }
+
     u64 Evaluator::createSection(const std::string &name) {
         auto id = this->m_sectionId;
         this->m_sectionId++;
 
-        this->m_sections.insert({ id, { name, { } } });
+        api::SectionMemoryBacked f = {name};
+        this->m_sections.insert({ id, std::unique_ptr<api::Section>(new api::SectionMemoryBacked(f)) });
         return id;
     }
 
     void Evaluator::removeSection(u64 id) {
         this->m_sections.erase(id);
+        this->m_persistentSections.erase(id);
+    }
+
+    const api::Section& Evaluator::retrieveSection(u64 id) const {
+        if (const auto &section = this->m_sections.find(id); section != this->m_sections.end())
+            return *section->second;
+        else 
+            err::E0011.throwError(fmt::format("Tried accessing a non-existing section with id {}.", id));
+    }
+
+    u64 Evaluator::findSection(const std::string &name) const {
+        const auto section = std::find_if(this->m_sections.begin(), this->m_sections.end(),
+                                                  [&](const auto &section) {
+                                                      return (section.second)->m_name == name;
+                                                  });
+        if (section == this->m_sections.end()) 
+            err::E0011.throwError(fmt::format("Tried accessing a non-existing section with name {}.", name));
+        return section->first;
     }
 
     std::vector<u8>& Evaluator::getSection(u64 id) {
@@ -506,13 +546,14 @@ namespace pl::core {
             err::E0011.throwError("Cannot access main section.");
         else if (id == ptrn::Pattern::HeapSectionId)
             return this->m_heap.back();
-        else if (this->m_sections.contains(id))
-            return this->m_sections[id].data;
+        else if (this->m_sections.contains(id)) {
+            return this->m_sections[id]->data();
+        }
         else
             err::E0011.throwError(fmt::format("Tried accessing a non-existing section with id {}.", id));
     }
 
-    const std::map<u64, api::Section> &Evaluator::getSections() const {
+    const std::map<u64, std::unique_ptr<api::Section>> &Evaluator::getSections() const {
         return this->m_sections;
     }
 
@@ -521,9 +562,9 @@ namespace pl::core {
     }
 
     bool Evaluator::evaluate(const std::string &sourceCode, const std::vector<std::shared_ptr<ast::ASTNode>> &ast) {
-        this->m_sections.clear();
+        this->m_sections = this->m_persistentSections;
         this->m_sectionIdStack.clear();
-        this->m_sectionId = 1;
+        this->m_sectionId = this->m_sections.size() + 1;
 
         this->m_scopes.clear();
         this->m_heap.clear();

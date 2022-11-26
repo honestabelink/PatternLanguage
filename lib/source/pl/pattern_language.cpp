@@ -239,6 +239,10 @@ namespace pl {
         return this->m_internals.evaluator->getPatternLimit();
     }
 
+    u64 PatternLanguage::createSection(const std::string &name, std::function<void(u64, const u8*, size_t)> readFunction, std::function<void(u64, const u8*, size_t)> writeFunction, size_t size) {
+        return this->m_internals.evaluator->createSection(name, std::move(readFunction), std::move(writeFunction), size);
+    }
+
     const std::vector<u8>& PatternLanguage::getSection(u64 id) {
         static std::vector<u8> empty;
         if (id > this->m_internals.evaluator->getSectionCount())
@@ -251,7 +255,7 @@ namespace pl {
             return this->m_internals.evaluator->getSection(id);
     }
 
-    [[nodiscard]] const std::map<u64, api::Section>& PatternLanguage::getSections() const {
+    [[nodiscard]] const std::map<u64, std::unique_ptr<api::Section>>& PatternLanguage::getSections() const {
         return this->m_internals.evaluator->getSections();
     }
 

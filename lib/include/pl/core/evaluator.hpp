@@ -115,9 +115,13 @@ namespace pl::core {
         void popSectionId();
         [[nodiscard]] u64 getSectionId() const;
         [[nodiscard]] u64 createSection(const std::string &name);
+        u64 createSection(const std::string &name, std::function<void(u64, const u8*, size_t)> readFunction, std::function<void(u64, const u8*, size_t)> writeFunction, size_t size);
+        // u64 createSection(const std::string &name, const std::string &path);
         void removeSection(u64 id);
+        [[nodiscard]] const api::Section& retrieveSection(u64 id) const;
+        [[nodiscard]] u64 findSection(const std::string &name) const;
         [[nodiscard]] std::vector<u8>& getSection(u64 id);
-        [[nodiscard]] const std::map<u64, api::Section>& getSections() const;
+        [[nodiscard]] const std::map<u64, std::unique_ptr<api::Section>>& getSections() const;
 
         [[nodiscard]] u64 getSectionCount() const;
 
@@ -349,8 +353,9 @@ namespace pl::core {
         std::atomic<bool> m_aborted;
 
         std::vector<u64> m_sectionIdStack;
-        std::map<u64, api::Section> m_sections;
-        u64 m_sectionId = 0;
+        std::map<u64, std::unique_ptr<api::Section>> m_persistentSections;
+        std::map<u64, std::unique_ptr<api::Section>> m_sections;
+        u64 m_sectionId = 1;
 
         std::vector<Scope> m_scopes;
         std::unordered_map <std::string, api::Function> m_customFunctions;
